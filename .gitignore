@@ -78,3 +78,6 @@ htmlcov/
 # *.h5
 # *.hdf5
 sandbox/scrapers/url_scraper/dr_urls.txt
+sandbox/scrapers/article_scraper/archive
+sandbox/scrapers/article_scraper/404_errors.txt
+sandbox/scrapers/article_scraper/redirect_errors.txt

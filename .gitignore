@@ -77,4 +77,4 @@ htmlcov/
 # *.parquet
 # *.h5
 # *.hdf5
-sandbox/url_scraper/dr_urls.txt
+sandbox/scrapers/url_scraper/dr_urls.txt

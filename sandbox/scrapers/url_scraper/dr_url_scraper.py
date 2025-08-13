@@ -53,9 +53,22 @@ def scrape_dr_urls_graphql():
             response.raise_for_status()
             data = response.json()
 
-            # --- Navigate the JSON response to find the results list ---
-            # The path is data -> drdk -> results
-            results = data.get("data", {}).get("drdk", {}).get("results", [])
+            # --- Safely navigate the JSON response to find the results list ---
+            # First, check if the API returned any errors in the JSON payload
+            if "errors" in data:
+                print(f"API returned an error: {data['errors']}")
+                break
+
+            # Safely access the nested data structure to prevent crashes
+            search_data = data.get("data", {}).get("drdk")
+
+            # Check if the path to the results is valid. If not, stop.
+            if not search_data:
+                print("Could not find 'data' or 'drdk' in the API response. Ending scrape.")
+                print(f"Problematic response content: {response.text}")
+                break
+
+            results = search_data.get("results", [])
 
             # --- Check if we have reached the end ---
             if not results:

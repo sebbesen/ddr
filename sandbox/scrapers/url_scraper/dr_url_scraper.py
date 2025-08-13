@@ -5,7 +5,7 @@ import json
 def scrape_dr_urls_graphql():
     """
     Scrapes all search result URLs for a given query from the DR.dk GraphQL API
-    and saves them to a file.
+    and saves them to a file. Includes a retry mechanism for network errors.
     """
     graphql_url = "https://www.dr.dk/tjenester/steffi/graphql"
 
@@ -29,6 +29,7 @@ def scrape_dr_urls_graphql():
     limit = 10
     offset = 0
     all_urls = []
+    max_retries = 5 # Number of times to retry a failed request
     
     # Use a session object to persist cookies across requests
     session = requests.Session()
@@ -49,10 +50,25 @@ def scrape_dr_urls_graphql():
             'variables': json.dumps(variables)
         }
 
+        response = None
+        for attempt in range(max_retries):
+            try:
+                # Use the session object to make the request
+                response = session.get(graphql_url, params=params, timeout=15) # Added timeout
+                response.raise_for_status()
+                # If the request was successful, break out of the retry loop
+                break
+            except requests.exceptions.RequestException as e:
+                wait_time = 2 ** attempt # Exponential backoff: 1, 2, 4, 8, 16 seconds
+                print(f"Network error: {e}. Retrying in {wait_time} seconds... (Attempt {attempt + 1}/{max_retries})")
+                time.sleep(wait_time)
+        
+        # If response is still None after all retries, something is very wrong.
+        if response is None:
+            print("Could not establish connection after multiple retries. Aborting.")
+            break
+
         try:
-            # Use the session object to make the request
-            response = session.get(graphql_url, params=params)
-            response.raise_for_status()
             data = response.json()
 
             if "errors" in data:
@@ -74,9 +90,9 @@ def scrape_dr_urls_graphql():
             
             page_urls = []
             for item in results:
-                # --- FIX: Check if the item is None (null) before processing ---
+                # Check if the item is None (null) before processing
                 if not item:
-                    continue # Skip this iteration if the item is null
+                    continue 
 
                 url = item.get('url')
                 if not url and item.get('urlPathId'):
@@ -93,15 +109,12 @@ def scrape_dr_urls_graphql():
             offset += limit
             time.sleep(0.5)
 
-        except requests.exceptions.RequestException as e:
-            print(f"A network error occurred: {e}")
-            break
         except json.JSONDecodeError:
             print(f"Failed to decode JSON. Response text: {response.text}")
             break
         except Exception as e:
             print(f"An unexpected error occurred: {e}")
-            if 'response' in locals():
+            if 'response' in locals() and response is not None:
                 print(f"Content that caused the error: {response.text}")
             break
 

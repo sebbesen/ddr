@@ -3,36 +3,74 @@ import requests
 import collections
 import time
 import re
+import random
+
+# --- Robustness Features ---
+
+# A list of common User-Agents to rotate through. This makes our requests look
+# like they are coming from different browsers, not a single script.
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0',
+    'Mozilla/5.0 (X11; Linux x86_64; rv:89.0) Gecko/20100101 Firefox/89.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:89.0) Gecko/20100101 Firefox/89.0'
+]
+
+# File to store the index of the last successfully downloaded URL
+PROGRESS_FILE = "archive_progress.txt"
+# File to log all URLs that result in a 404 error
+ERROR_404_FILE = "404_errors.txt"
+# File to log all URLs that cause a redirect loop
+REDIRECT_ERROR_FILE = "redirect_errors.txt"
 
 def sanitize_for_filename(text):
     """
     Removes or replaces characters from a string to make it a valid filename.
     """
-    # Remove the protocol and domain part for the filename itself
     text = re.sub(r'https?://[^/]+/', '', text)
-    # Replace any characters that are not letters, numbers, hyphens, or underscores
     return re.sub(r'[^a-zA-Z0-9_-]', '_', text)
 
 def sanitize_for_foldername(text):
     """
     Removes or replaces characters from a string to make it a valid folder name.
     """
-    # Remove protocol
     text = text.replace("https://", "").replace("http://", "")
-    # Replace slashes and other invalid characters with underscores
     text = re.sub(r'[^a-zA-Z0-9_-]', '_', text)
-    # Clean up any trailing underscores that might result
     return text.strip('_')
 
 def archive_articles(input_filename="dr_urls.txt", base_output_dir="archive"):
     """
     Downloads the raw HTML of URLs from a file and saves them into
-    organized folders based on their link type frequency.
+    organized folders. Includes features for robustness and resuming
+    an interrupted session.
 
     Args:
         input_filename (str): The file containing URLs.
         base_output_dir (str): The root directory to save the archive.
     """
+    start_index = 0
+    # --- Resume Logic ---
+    if os.path.exists(PROGRESS_FILE):
+        with open(PROGRESS_FILE, 'r') as f:
+            try:
+                last_completed_index = int(f.read().strip())
+                start_index = last_completed_index + 1
+                
+                resume_choice = input(
+                    f"A previous session was interrupted. "
+                    f"Resume from line {start_index}? (y/n): "
+                ).lower()
+                
+                if resume_choice != 'y':
+                    print("Starting from the beginning.")
+                    start_index = 0
+                else:
+                    print(f"Resuming download from line {start_index}.")
+
+            except (ValueError, IndexError):
+                print("Could not read progress file. Starting from the beginning.")
+    
     # --- Phase 1: Analyze URL types and determine folder order ---
     print("--- Phase 1: Analyzing URL types and frequencies ---")
     
@@ -47,7 +85,6 @@ def archive_articles(input_filename="dr_urls.txt", base_output_dir="archive"):
         print("The URL file is empty. Nothing to do.")
         return
 
-    # Count frequencies of each link type
     link_type_counts = collections.Counter()
     for url in urls:
         last_slash_index = url.rfind('/')
@@ -55,11 +92,8 @@ def archive_articles(input_filename="dr_urls.txt", base_output_dir="archive"):
             link_type = url[:last_slash_index + 1]
             link_type_counts[link_type] += 1
     
-    # Create the mapping from link type to numbered folder name
     folder_mapping = {}
-    # .most_common() gives a list of (item, count) tuples, sorted by count
     for i, (link_type, count) in enumerate(link_type_counts.most_common(), 1):
-        # Format number with leading zeros (e.g., 001, 012)
         prefix = f"{i:03d}"
         sanitized_type = sanitize_for_foldername(link_type)
         folder_name = f"{prefix}_{sanitized_type}"
@@ -69,60 +103,95 @@ def archive_articles(input_filename="dr_urls.txt", base_output_dir="archive"):
     # --- Phase 2: Download and save articles ---
     print("\n--- Phase 2: Downloading and archiving articles ---")
     
-    # Ensure the base archive directory exists
     os.makedirs(base_output_dir, exist_ok=True)
     
-    session = requests.Session() # Use a session for connection pooling
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
+    session = requests.Session()
+    total_urls = len(urls)
+    max_retries = 3
 
-    for i, url in enumerate(urls):
+    for i in range(start_index, total_urls):
+        url = urls[i]
+        
+        url_processed_successfully = False
+
         try:
             last_slash_index = url.rfind('/')
             if last_slash_index == -1 or last_slash_index >= len(url) - 1:
-                print(f"Skipping invalid URL format: {url}")
+                print(f"({i+1}/{total_urls}) Skipping invalid URL format: {url}")
+                url_processed_successfully = True
                 continue
 
             link_type = url[:last_slash_index + 1]
             target_folder_name = folder_mapping.get(link_type)
 
             if not target_folder_name:
-                print(f"Warning: Could not find folder mapping for URL: {url}")
+                print(f"({i+1}/{total_urls}) Warning: Could not find folder mapping for URL: {url}")
+                url_processed_successfully = True
                 continue
                 
-            # Create the full path for the folder
             full_folder_path = os.path.join(base_output_dir, target_folder_name)
             os.makedirs(full_folder_path, exist_ok=True)
 
-            # Create a clean filename from the last part of the URL
             url_slug = url[last_slash_index + 1:]
             filename = sanitize_for_filename(url_slug) + ".html"
             file_path = os.path.join(full_folder_path, filename)
 
-            # Check if file already exists to avoid re-downloading
             if os.path.exists(file_path):
-                print(f"({i+1}/{len(urls)}) Skipping already downloaded file: {file_path}")
+                print(f"({i+1}/{total_urls}) Skipping already downloaded file: {file_path}")
+                url_processed_successfully = True
                 continue
 
-            # Download the content
-            print(f"({i+1}/{len(urls)}) Downloading {url} -> {file_path}")
-            response = session.get(url, headers=headers, timeout=15)
-            response.raise_for_status() # Raise an exception for bad status codes
+            for attempt in range(max_retries):
+                try:
+                    headers = {'User-Agent': random.choice(USER_AGENTS)}
+                    print(f"({i+1}/{total_urls}) Downloading {url} (Attempt {attempt+1})")
+                    response = session.get(url, headers=headers, timeout=20)
+                    response.raise_for_status()
 
-            # Save the raw HTML
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(response.text)
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(response.text)
+                    
+                    url_processed_successfully = True
+                    break 
+                
+                except requests.exceptions.TooManyRedirects as e:
+                    print(f"  -> Too many redirects. Skipping and logging.")
+                    with open(REDIRECT_ERROR_FILE, 'a', encoding='utf-8') as error_f:
+                        error_f.write(f"{url}\n")
+                    url_processed_successfully = True
+                    break
+
+                except requests.exceptions.HTTPError as e:
+                    if e.response.status_code == 404:
+                        print(f"  -> URL not found (404). Skipping and logging.")
+                        with open(ERROR_404_FILE, 'a', encoding='utf-8') as error_f:
+                            error_f.write(f"{url}\n")
+                        
+                        url_processed_successfully = True
+                        break
+                    else:
+                        print(f"  -> HTTP error on attempt {attempt+1}: {e}")
+                        if attempt < max_retries - 1:
+                            time.sleep(2 ** attempt)
+                
+                except requests.exceptions.RequestException as e:
+                    print(f"  -> Network error on attempt {attempt+1}: {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(2 ** attempt)
             
-            # Be a good citizen and don't hammer the server
-            time.sleep(0.25)
+        finally:
+            if url_processed_successfully:
+                with open(PROGRESS_FILE, 'w') as f:
+                    f.write(str(i))
+                time.sleep(random.uniform(0.5, 1.5))
+            else:
+                print(f"Failed to download {url} after multiple attempts. Exiting.")
+                break 
 
-        except requests.exceptions.RequestException as e:
-            print(f"Error downloading {url}: {e}")
-        except Exception as e:
-            print(f"An unexpected error occurred for URL {url}: {e}")
-
-    print("\n--- Archiving complete! ---")
+    else: 
+        print("\n--- Archiving complete! ---")
+        if os.path.exists(PROGRESS_FILE):
+            os.remove(PROGRESS_FILE)
 
 if __name__ == "__main__":
     archive_articles()

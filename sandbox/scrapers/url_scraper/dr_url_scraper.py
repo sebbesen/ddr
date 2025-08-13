@@ -15,13 +15,12 @@ def scrape_dr_urls_graphql():
     """
     
     # Mimic browser headers to ensure the request is accepted.
-    # Added 'if-none-match' from the cURL command.
     headers = {
         'accept': '*/*',
         'accept-language': 'en,da;q=0.9,de;q=0.8',
         'referer': 'https://www.dr.dk/soeg?query=israel&sort=PublishTime',
         'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
-        'if-none-match': 'W/"2c99-kyZZ2hsVP8B3nRcfjxdEMQzEevs"', # Added from cURL
+        'if-none-match': 'W/"2c99-kyZZ2hsVP8B3nRcfjxdEMQzEevs"',
     }
 
     # --- Scraper settings ---
@@ -64,8 +63,6 @@ def scrape_dr_urls_graphql():
 
             if not search_data:
                 print(f"Could not find 'data' or 'drdk' in API response at offset {offset}. Ending scrape.")
-                # --- CRITICAL DEBUGGING STEP ---
-                # Print the exact text from the server to see what's wrong.
                 print(f"Problematic response content: {response.text}")
                 break
 
@@ -77,6 +74,10 @@ def scrape_dr_urls_graphql():
             
             page_urls = []
             for item in results:
+                # --- FIX: Check if the item is None (null) before processing ---
+                if not item:
+                    continue # Skip this iteration if the item is null
+
                 url = item.get('url')
                 if not url and item.get('urlPathId'):
                     url = f"https://www.dr.dk/{item.get('urlPathId')}"
@@ -100,7 +101,6 @@ def scrape_dr_urls_graphql():
             break
         except Exception as e:
             print(f"An unexpected error occurred: {e}")
-            # Also print the response text here for context
             if 'response' in locals():
                 print(f"Content that caused the error: {response.text}")
             break
